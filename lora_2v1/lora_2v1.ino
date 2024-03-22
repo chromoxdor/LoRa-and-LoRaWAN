@@ -1,12 +1,12 @@
 //************* OPTIONS ************************************************************************
 #define NODE_NR 1  //give your node a number
 
-#define LORA 0
+#define LORA 1
 #define LORA_GATEWAY 0
 #define LORA_FREQUENCY 868E6  //frequency in Hz (433E6, 868E6, 915E6)
 
 #define LORAWAN 0
-#define JOIN_RETRY 100  //how often should the node try to join a gatway until it will go
+#define JOIN_RETRY 100  //how often should the node try to join a gatway until it will go \
                         // to sleep indefinitely
 
 #define SCALE 1
@@ -15,11 +15,12 @@
 #define SHT 0  // use an SHT2X I2C device
 
 #define DS18B20_TEMP 0   // set to 1 if one or multiple sensors are connected to one pin
-#define DS18B20_TEMP2 1  // set to 1 if one or two sensors (on different pins) are connected
+#define DS18B20_TEMP2 0  // set to 1 if one or two sensors (on different pins) are connected
 
 #define SLEEP_TIME 0.2;  // sleep time in minutes
-#define ACK_BEEP 1 // if an acknowledge beep is needed when data was sent
-#define SERIAL 1  // saves some memory if not needed
+#define ACK_BEEP 1       // if an acknowledge beep is needed when data was sent
+#define SERIAL 1         // saves some memory if not needed
+#define LONGPRESS_S 4    // seconds to longpressevent
 //**********************************************************************************************
 
 
@@ -221,12 +222,12 @@ void setup() {
 #endif
 #endif
 
-  //------------------------------------------------------------buttons init
-  #if SCALE
+//------------------------------------------------------------buttons init
+#if SCALE
   button.attachLongPressStart(LongPressStart);
-  #endif
+#endif
   button.attachClick(click);
-  button.setPressMs(5000);  
+  button.setPressMs(LONGPRESS_S * 1000);
 
   //------------------------------------------------------------sht init
 #if SHT
@@ -333,7 +334,6 @@ void sleepCounter() {
   } else {
     counter = 0;
     woke = true;
-    powerUp();
     gatherData();
   }
 }
@@ -566,7 +566,7 @@ void gatherData() {
   Serial.print("...going to sleep");
 #endif
 #if ACK_BEEP
-  ack(20);
+  ack(10);
 #endif
   sleep();
 #else
@@ -614,7 +614,7 @@ String makePayload() {
 void onTxDone() {
 
 #if ACK_BEEP
-  ack(20);
+  ack(10);
 #endif
 #if SERIAL
   Serial.println("TxDone");
@@ -721,18 +721,19 @@ void calibrate() {
   calib = true;
   blinker(2);
   weight = myScale.get_units(1);
-  //Serial.println("Tare scale...");
-  myScale.tare(20);  // average 20 measurements.
 #if SERIAL
-  Serial.println("Determine zero weight offset...");
+  Serial.println("Tare scale...");
 #endif
-  ack(100);
+  myScale.tare(20);  // average 20 measurements.
+
   offset = myScale.get_offset();
+  ack(100);
 
-  //Serial.print("OFFSET: ");
-  //Serial.println(offset);
-  //Serial.println()
-
+#if SERIAL
+  Serial.print("Press the button for ");
+  Serial.print(LONGPRESS_S);
+  Serial.println(" seconds to start the calibration");
+#endif
   currentCalibTime = millis();
   while (!longPressed) {
     button.tick();
@@ -746,39 +747,50 @@ void calibrate() {
   if (calib) {
     blinker(4);
 #if SERIAL
-    Serial.println("Place exactly 10000g on the scale and press the button");
+    Serial.print("Place exactly ");
+    Serial.print(CALIBWEIGHT);
+    Serial.print(" on the scale and press the button for ");
+    Serial.print(LONGPRESS_S);
+    Serial.println(" seconds");
 #endif
+    currentCalibTime = millis();
     while (!longPressed) {
       button.tick();
+      if (millis() - currentCalibTime > 300000) {
+        calib = false;
+        break;
+      }
     }
-    blinker(1);
-    //uint32_t weightCalib = 5000;
-    int weightCalib = CALIBWEIGHT;
+    if (calib) {
+      blinker(1);
+      //uint32_t weightCalib = 5000;
+      int weightCalib = CALIBWEIGHT;
 
-    //Serial.print("WEIGHT: ");
-    //Serial.println(weightCalib);
-    myScale.calibrate_scale(weightCalib, 20);
-    scale = myScale.get_scale();
+      //Serial.print("WEIGHT: ");
+      //Serial.println(weightCalib);
+      myScale.calibrate_scale(weightCalib, 20);
+      scale = myScale.get_scale();
 #if SERIAL
-    Serial.print("SCALE:  ");
-    Serial.println(scale, 6);
+      Serial.print("SCALE:  ");
+      Serial.println(scale, 6);
 #endif
-    EEPROM.put(1, offset);
-    EEPROM.put(6, scale);
-    myScale.set_offset(offset);
-    myScale.set_scale(scale);
+      EEPROM.put(1, offset);
+      EEPROM.put(6, scale);
+      myScale.set_offset(offset);
+      myScale.set_scale(scale);
 
 #if SERIAL
-    Serial.print("offset(");
-    Serial.print(offset);
-    Serial.print("); and scale(");
-    Serial.print(scale, 6);
-    Serial.println(")");
+      Serial.print("offset(");
+      Serial.print(offset);
+      Serial.print("); and scale(");
+      Serial.print(scale, 6);
+      Serial.println(")");
 #endif
 
-    //Serial.println("\n\n");
-    blinker(6);
-    calib = false;
+      //Serial.println("\n\n");
+      blinker(6);
+      calib = false;
+    }
   } else {
 #if SERIAL
     Serial.println("Only set new tare");

@@ -1,13 +1,13 @@
 //************* OPTIONS ************************************************************************
-#define NODE_NR 1  //give your node a number
+#define NODE_NR 1  //give your node a number or a name
 
 #define LORA 1
 #define LORA_GATEWAY 0
-#define LORA_FREQUENCY 868E6  //frequency in Hz (433E6, 868E6, 915E6)
 
 #define LORAWAN 0
 #define JOIN_RETRY 100  //how often should the node try to join a gatway until it will go \
                         // to sleep indefinitely
+#define LORA_FREQUENCY 868E6  //frequency in Hz (433E6, 868E6, 915E6)
 
 #define SCALE 1
 #define CALIBWEIGHT 37  // weight used for calibration the scale in gramm
@@ -15,12 +15,12 @@
 #define SHT 0  // use an SHT2X I2C device
 
 #define DS18B20_TEMP 0   // set to 1 if one or multiple sensors are connected to one pin
-#define DS18B20_TEMP2 0  // set to 1 if one or two sensors (on different pins) are connected
+#define DS18B20_TEMP2 1  // set to 1 if one or two sensors (on different pins) are connected
 
-#define SLEEP_TIME 0.2;  // sleep time in minutes
+#define SLEEP_TIME 0.1;  // sleep time in minutes
 #define ACK_BEEP 1       // if an acknowledge beep is needed when data was sent
 #define SERIAL 1         // saves some memory if not needed
-#define LONGPRESS_S 4    // seconds to longpressevent
+#define LONGPRESS_S 5    // seconds to longpressevent
 //**********************************************************************************************
 
 
@@ -138,6 +138,7 @@ void setup() {
   digitalWrite(MOSFET, HIGH);
 
   pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, HIGH);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
 #if !LORAWAN
@@ -255,12 +256,14 @@ void tryJoining() {
     Serial.println(joinCount);
     delay(100);
 #endif
+    if (joinCount >= 1) {
+      delay(8000);
+    }
     isJoined = lora.join();
     joinCount++;
     ack(60);
-    if (joinCount > 1) {
-      delay(8000);
-    }
+    delay(100);
+    ack(60);
     if (isJoined) { joinCount = 1000; }
   } while (joinCount < JOIN_RETRY);
 
@@ -475,16 +478,19 @@ void gatherData() {
 
   //------------------------------------------------------------scale
 #if SCALE
-  sensorTime = millis();
 #if SERIAL
   Serial.println("...waiting for scale");
 #endif
+  sensorTime = millis();
   do {
     sensReady = myScale.is_ready();
     delay(1);
 #if SERIAL
     Serial.print(".");
 #endif
+    //there might be a problem with lora.update(); causing this loop to run indefinitely
+    //this is a failsafe
+    if (millis() - sensorTime > 500) resetFunc();
   } while (!sensReady || millis() - sensorTime < 300);
 
   if (sensReady) {
@@ -525,7 +531,9 @@ void gatherData() {
 #endif
 
   //------------------------------------------------------------send data
+  //                                                      LoRA
 #if LORA
+
 #if SERIAL
   Serial.print("Sending packet (LoRa)...");
   Serial.println(Pcounter);
@@ -539,9 +547,12 @@ void gatherData() {
   LoRa.beginPacket();
   LoRa.print(payload);
   LoRa.endPacket(true);  // true = async / non-blocking mode
+
 #endif
+  //                                                      LoRaWAN
 
 #if LORAWAN
+
 #if SERIAL
   Serial.print("Sending packet (LoRaWan)...");
 #endif
@@ -556,11 +567,21 @@ void gatherData() {
   //sending
   lora.sendUplink(payloadCStr, payloadLength, 0, 1);
 
+  // Check Lora RX
+  bool isAck = false;
+  sensorTime = millis();
+  do {
+    lora.update();
+    isAck = lora.readAck();
+  } while (!isAck || millis() - sensorTime < 2000);
+  if (isAck) blinker(3);
+
 #if SERIAL
   Serial.println("TxDone");
 #endif
-#endif
 
+#endif
+//------
 #if !LORA
 #if SERIAL
   Serial.print("...going to sleep");
@@ -581,6 +602,7 @@ void gatherData() {
 //***********************************************************************************************
 
 #if LORA || LORAWAN
+
 String makePayload() {
   String myStr;
   myStr = String(NODE_NR) + ",";
@@ -604,13 +626,16 @@ String makePayload() {
   myStr.remove(myStr.length() - 1);
   return myStr;
 }
+
 #endif
 
 
 //***********************************************************************************************
 //                                                                                  Sent package
 //***********************************************************************************************
+
 #if LORA
+
 void onTxDone() {
 
 #if ACK_BEEP
@@ -622,6 +647,7 @@ void onTxDone() {
 #endif
   sleep();
 }
+
 #endif
 
 
@@ -695,6 +721,7 @@ void ack(int t) {
 //***********************************************************************************************
 
 #if LORA_GATEWAY
+
 void onReceive(int packetSize) {
   // read packet
   for (int i = 0; i < packetSize; i++) {
@@ -796,6 +823,7 @@ void calibrate() {
     Serial.println("Only set new tare");
 #endif
     EEPROM.put(12, weight);
+    ack(100);
   }
   delay(100);
   longPressed = false;

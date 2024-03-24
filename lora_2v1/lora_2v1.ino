@@ -1,23 +1,27 @@
 //************* OPTIONS ************************************************************************
 #define NODE_NR 1  //give your node a number or a name
 
-#define LORA 1
+#define LORA 0
 #define LORA_GATEWAY 0
 
-#define LORAWAN 0
-#define JOIN_RETRY 100  //how often should the node try to join a gatway until it will go \
-                        // to sleep indefinitely
+#define LORAWAN 1
+#define DEVEUI   "0000000000000000"
+#define APPEUI   "0000000000000000"
+#define APPKEY   "00000000000000000000000000000000"
+#define JOIN_RETRY 100        //how often should the node try to join a gateway until it will go
+                              // to sleep indefinitely
+
 #define LORA_FREQUENCY 868E6  //frequency in Hz (433E6, 868E6, 915E6)
 
 #define SCALE 1
-#define CALIBWEIGHT 37  // weight used for calibration the scale in gramm
+#define CALIBWEIGHT 10000  // weight used for calibrating the scale in gramm
 
 #define SHT 0  // use an SHT2X I2C device
 
 #define DS18B20_TEMP 0   // set to 1 if one or multiple sensors are connected to one pin
 #define DS18B20_TEMP2 1  // set to 1 if one or two sensors (on different pins) are connected
 
-#define SLEEP_TIME 0.1;  // sleep time in minutes
+#define SLEEP_TIME 1;  // sleep time in minutes
 #define ACK_BEEP 1       // if an acknowledge beep is needed when data was sent
 #define SERIAL 1         // saves some memory if not needed
 #define LONGPRESS_S 5    // seconds to longpressevent
@@ -48,9 +52,9 @@ const int irqPin = 3;    // change for your board; must be a hardware interrupt 
 #if LORAWAN
 #include <lorawan.h>  //https://github.com/ElectronicCats/Beelan-LoRaWAN
 // OTAA credentials
-const char *devEui = "0000000000000000";
-const char *appEui = "0000000000000000";
-const char *appKey = "00000000000000000000000000000000";
+const char *devEui = DEVEUI;
+const char *appEui = APPEUI;
+const char *appKey = APPKEY;
 char outStr[255];
 byte recvStatus = 0;
 
@@ -445,6 +449,7 @@ void gatherData() {
   int cTemp = 1;
   tempC1 = -127;
   tempC2 = -127;
+  sensorTime = millis();
   while (ds.selectNext()) {
     if (cTemp = 1) {
       tempC1 = ds.getTempC();
@@ -452,6 +457,7 @@ void gatherData() {
       tempC2 = ds.getTempC();
     }
     cTemp++;
+    if (millis() - sensorTime > 1000) break;
   }
 #if SERIAL
   Serial.print("temp 1:");
@@ -490,8 +496,8 @@ void gatherData() {
 #endif
     //there might be a problem with lora.update(); causing this loop to run indefinitely
     //this is a failsafe
-    if (millis() - sensorTime > 500) resetFunc();
-  } while (!sensReady || millis() - sensorTime < 300);
+    if (millis() - sensorTime > 300) break;
+  } while (!sensReady);
 
   if (sensReady) {
     weight = myScale.get_units(1) - tare;
@@ -519,7 +525,8 @@ void gatherData() {
       sensReady = sensor.measure();
       delay(1);
       Serial.print(".");
-    } while (!sensReady || millis() - sensorTime < 300) if (sensReady) {*/
+      if (millis() - sensorTime > 300) break;
+    } while (!sensReady) {*/
   tempSHT = sht.getTemperature(65);
   humSHT = sht.getHumidity(28);
 #if SERIAL
@@ -570,10 +577,14 @@ void gatherData() {
   // Check Lora RX
   bool isAck = false;
   sensorTime = millis();
+
   do {
     lora.update();
     isAck = lora.readAck();
-  } while (!isAck || millis() - sensorTime < 2000);
+    //there might be a problem with lora.update(); causing this loop to run indefinitely
+    //this is a failsafe
+    if (millis() - sensorTime > 2000) break;
+  } while (!isAck);
   if (isAck) blinker(3);
 
 #if SERIAL

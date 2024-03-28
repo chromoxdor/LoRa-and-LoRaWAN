@@ -1,45 +1,76 @@
+//**********************************************************************************************
 //************* OPTIONS ************************************************************************
-#define NODE_NR 1  //give your node a number or a name
 
-#define LORA 0
+//common-setting-section------------------------------------------------------------------------
+#define LORA_FREQUENCY 868E6  //frequency in Hz (433E6, 868E6, 915E6)
+#define NODE_NR "1"           //give your node a number or a name
+
+
+//LoRa-section----------------------------------------------------------------------------------
+#define LORA 1
+#define TX_RETRIES 2  //how often should the LoRa node try to send when no ack is received until \
+                      // the system goes to sleep
 #define LORA_GATEWAY 0
 
-#define LORAWAN 1
-#define DEVEUI   "0000000000000000"
-#define APPEUI   "0000000000000000"
-#define APPKEY   "00000000000000000000000000000000"
-#define JOIN_RETRY 100        //how often should the node try to join a gateway until it will go
-                              // to sleep indefinitely
+#define ENCRYPTION 0           //add simple AES128 encryption to LoRa
+#define PASSWORD "MyPassword"  //enter a password and make sure it matches the one of \
+                               // the gateway/node
+#define COMMON_PHRASE "CXD"    // Gateway checks if received message contains this phrase \
+                               // at the end and only  reacts to that
 
-#define LORA_FREQUENCY 868E6  //frequency in Hz (433E6, 868E6, 915E6)
+//LoRaWAN-section-------------------------------------------------------------------------------
+#define LORAWAN 0
+#define DEVEUI "0000000000000000"
+#define APPEUI "0000000000000000"
+#define APPKEY "00000000000000000000000000000000"
+#define JOIN_RETRY 100  //how often should the node try to join a gateway until it will go \
+                        // to sleep indefinitely
 
+//sensor-section--------------------------------------------------------------------------------
 #define SCALE 1
 #define CALIBWEIGHT 10000  // weight used for calibrating the scale in gramm
 
-#define SHT 0  // use an SHT2X I2C device
+#define SHT 1  // use an SHT2X I2C device
 
 #define DS18B20_TEMP 0   // set to 1 if one or multiple sensors are connected to one pin
 #define DS18B20_TEMP2 1  // set to 1 if one or two sensors (on different pins) are connected
 
-#define SLEEP_TIME 1;  // sleep time in minutes
-#define ACK_BEEP 1       // if an acknowledge beep is needed when data was sent
-#define SERIAL 1         // saves some memory if not needed
-#define LONGPRESS_S 5    // seconds to longpressevent
+
+//extras-section--------------------------------------------------------------------------------
+#define SLEEP_TIME 0          // sleep time in minutes (0 will cause a 8 sec intervall)
+#define ACK_BEEP 1            // if an acknowledge beep is needed when data was sent
+#define SERIAL 0              // saves some memory if not needed since it is only for debugging
+#define LONGPRESS_S 5         // seconds to longpressevent
+#define MAX_PAYLOAD_SIZE 128  // Maximum size of the payload buffer
+#define SERIAL_SPEED 9600     // baud rate (e.g. 9600, 19200, 38400, 57600, 115200)
+#define PARITY SERIAL_8N1     // set serial mode (e.g. SERIAL_8N1, SERIAL_8E1 ,SERIAL_8O1)
+//**********************************************************************************************
 //**********************************************************************************************
 
 
 #if LORA_GATEWAY
 #undef LORAWAN
 #undef LORA
+#undef SCALE
+#undef SHT
+#undef DS18B20_TEMP 0
+#undef DS18B20_TEMP2 1
 #endif
 
 #if LORA
-#undef LORAWAN
+bool isReceived = true;
+bool triedOnce = false;
+int nrOfTries;
+//#undef LORAWAN
 #endif
 
 #if LORA || LORAWAN
 #include "SPI.h"
 char buffer[10];
+unsigned long rxTime;
+unsigned long nrOfMsgs;
+String checkStr;
+String payload;
 #endif
 
 #if LORA || LORA_GATEWAY
@@ -47,14 +78,17 @@ char buffer[10];
 const int csPin = 10;    // LoRa radio chip select
 const int resetPin = 9;  // LoRa radio reset
 const int irqPin = 3;    // change for your board; must be a hardware interrupt pin
+
 #endif
 
 #if LORAWAN
 #include <lorawan.h>  //https://github.com/ElectronicCats/Beelan-LoRaWAN
+
 // OTAA credentials
-const char *devEui = DEVEUI;
-const char *appEui = APPEUI;
-const char *appKey = APPKEY;
+const char* devEui = DEVEUI;
+const char* appEui = APPEUI;
+const char* appKey = APPKEY;
+
 char outStr[255];
 byte recvStatus = 0;
 
@@ -69,6 +103,7 @@ const sRFM_pins RFM_pins = {
 
 bool isJoined;
 int joinCount = 0;
+bool waitForAck = false;
 #endif
 
 #if SCALE
@@ -107,6 +142,37 @@ float tempC1;
 float tempC2;
 #endif
 
+#if ENCRYPTION
+#include <AESLib.h>
+#include "Base64.h"  // Include the Base64 library
+
+void convertPassphraseToKey(const char* passphrase, uint8_t* key) {
+  int passphraseLength = strlen(passphrase);
+  if (passphraseLength < 16) {
+    // If passphrase is shorter than 16 bytes, repeat it to fill the key
+    for (int i = 0; i < 16; i++) {
+      key[i] = passphrase[i % passphraseLength];
+    }
+  } else if (passphraseLength == 16) {
+    // If passphrase is exactly 16 bytes, copy it directly to the key
+    memcpy(key, passphrase, 16);
+  } else {
+// If passphrase is longer than 16 bytes, truncate it and issue a warning
+#warning "Passphrase is longer than 16 bytes. Truncating to 16 bytes."
+    memcpy(key, passphrase, 16);
+  }
+}
+uint8_t key[16];
+#endif
+
+#if (PARITY == O)
+#define SERIAL_MODE "SERIAL_8O1"
+#elif (PARITY == E)
+#define SERIAL_MODE "SERIAL_8E1"
+#else
+#define SERIAL_MODE "SERIAL_8N1"
+#endif
+
 #include <EEPROM.h>
 #include "LowPower.h"  //https://github.com/rocketscream/Low-Power
 
@@ -125,12 +191,18 @@ bool longPressed = false;
 bool manuelWake = false;
 
 unsigned long sensorTime;
+unsigned long upTime;
 
 float voltage;
 float sleepTime = SLEEP_TIME;  // sleep time in minutes
 
 #include "OneButton.h"  //https://github.com/mathertel/OneButton
 OneButton button(BUTTON_PIN, true);
+
+//------------------------------------------------------------encrytion init
+#if ENCRYPTION
+
+#endif
 
 
 //***********************************************************************************************
@@ -149,33 +221,44 @@ void setup() {
   ack(100);
 #endif
 
-#if SERIAL || LORA_GATEWAY
-  Serial.begin(9600);
-#endif
-  ////------------------------------------------------------------lora init
+  Serial.begin(SERIAL_SPEED, PARITY);
+  // Check if a device is connected
+  if (!Serial) {
+    // If no device is connected, stop serial communication
+    Serial.end();
+  }
 
+  //------------------------------------------------------------encrytion key
+#if ENCRYPTION
+  convertPassphraseToKey(PASSWORD, key);
+  Serial.print("Password: ");
+  for (int i = 0; i < 16; ++i) {
+    Serial.print((char)key[i]);
+  }
+  Serial.println();
+  Serial.flush();
+#endif
+
+  //------------------------------------------------------------lora init
 #if LORA || LORA_GATEWAY
   LoRa.setPins(csPin, resetPin, irqPin);
-#if SERIAL && LORA
+#if LORA
   Serial.println("Starting LoRa Node");
 #endif
-#if SERIAL && LORA_GATEWAY
+#if LORA_GATEWAY
   Serial.println("Starting LoRa Gateway");
 #endif
 
-  if (!LoRa.begin(LORA_FREQUENCY)) {
-#if SERIAL
-    Serial.println("Starting LoRa failed!");
-#endif
-    while (1)
-      ;
-  }
-#if LORA
+  // if (!LoRa.begin(LORA_FREQUENCY)) {
+  //   Serial.println("Starting LoRa failed!");
+  //   while (1)
+  //     ;
+  // }
+#if LORA || LORA_GATEWAY
   LoRa.onTxDone(onTxDone);
+  LoRa.onReceive(onReceive);
 #endif
 #if LORA_GATEWAY
-  // register the receive callback
-  LoRa.onReceive(onReceive);
   // put the radio into receive mode
   LoRa.receive();
 #endif
@@ -184,9 +267,7 @@ void setup() {
 
 #if LORAWAN
   if (!lora.init()) {
-#if SERIAL
     Serial.println("RFM95 not detected");
-#endif
     delay(5000);
     return;
   }
@@ -223,7 +304,7 @@ void setup() {
   Serial.print("); tare(");
   Serial.print(tare);
   Serial.println(");\n");
-  delay(100);
+  delayIfSerial();
 #endif
 #endif
 
@@ -241,7 +322,9 @@ void setup() {
 #endif
 
   //------------------------------------------------------------initial read and send
+#if !LORA_GATEWAY
   gatherData();
+#endif
 }
 
 
@@ -258,7 +341,7 @@ void tryJoining() {
 #if SERIAL
     Serial.println("Joining...");
     Serial.println(joinCount);
-    delay(100);
+    delayIfSerial();
 #endif
     if (joinCount >= 1) {
       delay(8000);
@@ -279,6 +362,7 @@ void tryJoining() {
   } else {
 #if SERIAL
     Serial.println("Sleeping forever...");
+    delayIfSerial();
 #endif
     sleepForever();
   }
@@ -293,10 +377,10 @@ void tryJoining() {
 #if !LORA_GATEWAY
 void sleep()  // here we put the arduino to sleep
 {
-#if SERIAL
-  delay(200);
-#endif
   powerDown();
+#if LORAWAN
+  waitForAck = false;
+#endif
   manuelWake = false;
   woke = false;
   digitalWrite(MOSFET, LOW);
@@ -308,7 +392,7 @@ void sleep()  // here we put the arduino to sleep
   // Disable external pin interrupt on wake up pin.
   detachInterrupt(0);
 }
-
+//------------------------------------------------------------sleep forever
 #if LORAWAN
 void sleepForever()  // here we put the arduino to sleep
 {
@@ -331,8 +415,11 @@ void wakeUp()  // here the interrupt is handled after wakeup
 //------------------------------------------------------------sleep counter
 void sleepCounter() {
 #if SERIAL
-  Serial.println(counter);
-  delay(100);
+  Serial.print("sleepcounter:");
+  Serial.print(counter);
+  Serial.print("/");
+  Serial.println(int(ceil(sleepTime * 7.5)));
+  delayIfSerial();
 #endif
   if (counter < ceil(sleepTime * 7.5)) {  //(minutes * 60 / 8) since the mcu can only go to sleep for 8sec via watchdog timer
     woke = false;
@@ -349,10 +436,12 @@ void sleepCounter() {
 //                                                                                      POWER UP
 //***********************************************************************************************
 void powerUp() {
-
+  upTime = millis();
   button.tick();
+
 #if SERIAL
   Serial.println("Powering up");
+  delayIfSerial();
 #endif
 
 #if LORAWAN
@@ -422,6 +511,56 @@ void loop() {
   }
 #endif
 
+  //----------------------------------------------------------LoRa RX timeout
+#if LORA
+
+  // Checks if the time since the last received packet is more than 600 milliseconds,
+  // the device is awake (variable woke is true), and no packet has been received yet
+  if (millis() - rxTime > 600 && woke && !isReceived) {
+    isReceived = true;
+
+#if SERIAL
+    Serial.println("Gateway not answering.");
+#endif
+
+#if ACK_BEEP
+    ack(10);
+#endif
+
+    // Checks if the number of transmission tries is less than the defined maximum
+    if (nrOfTries < TX_RETRIES) {
+      nrOfTries++;                      // Increments the number of transmission tries
+      triedOnce = true;                 // prevents the message counter from counting
+      counter = ceil(sleepTime * 7.5);  // sleep for 8 seconds and try again
+    }
+
+    // Puts the LoRa node to sleep
+    sleepLoraNode();
+  }
+#endif
+
+
+//----------------------------------------------------------LoRaWAN RX
+#if LORAWAN
+  if (woke && waitForAck) {
+    // Check Lora RX
+    lora.update();
+    if (lora.readAck()) {
+#if SERIAL
+      Serial.println("LoRaWAN - TxDone");
+      delayIfSerial();
+#endif
+      sleep();
+    } else if (millis() - rxTime > 1000) {
+#if SERIAL
+      Serial.println("LoRaWAN - timeout");
+      delayIfSerial();
+#endif
+      sleep();
+    }
+  }
+#endif
+
 #endif  //#if !LORA_GATEWAY
 }
 
@@ -431,8 +570,11 @@ void loop() {
 //***********************************************************************************************
 
 #if !LORA_GATEWAY
+
 void gatherData() {
+
   powerUp();
+
   //------------------------------------------------------------battery
   int sensorValue = analogRead(A0);
   //voltage = sensorValue * (3.91 / 377.0); //v1 board value
@@ -494,9 +636,7 @@ void gatherData() {
 #if SERIAL
     Serial.print(".");
 #endif
-    //there might be a problem with lora.update(); causing this loop to run indefinitely
-    //this is a failsafe
-    if (millis() - sensorTime > 300) break;
+    if (millis() - sensorTime > 500) break;
   } while (!sensReady);
 
   if (sensReady) {
@@ -510,7 +650,7 @@ void gatherData() {
 #endif
   } else {
 #if SERIAL
-    Serial.print("scale was not ready");
+    Serial.println("Scale was not ready!");
 #endif
   }
 #endif
@@ -545,63 +685,18 @@ void gatherData() {
   Serial.print("Sending packet (LoRa)...");
   Serial.println(Pcounter);
 #endif
-  String payload = makePayload();
-#if SERIAL
-  Serial.print("Sending: ");
-  Serial.println(payload);
-#endif
-  // send in async / non-blocking mode
-  LoRa.beginPacket();
-  LoRa.print(payload);
-  LoRa.endPacket(true);  // true = async / non-blocking mode
+  payload = makePayload();
+  LoRa_sendMessage(payload);  // send a message
 
 #endif
   //                                                      LoRaWAN
-
 #if LORAWAN
-
-#if SERIAL
-  Serial.print("Sending packet (LoRaWan)...");
+  sendToLorawan();
 #endif
-  String payload = makePayload();
-  const char *payloadCStr = payload.c_str();
-  size_t payloadLength = strlen(payloadCStr);
+  //------
 
-#if SERIAL
-  Serial.print("Sending: ");
-  Serial.println(payloadCStr);
-#endif
-  //sending
-  lora.sendUplink(payloadCStr, payloadLength, 0, 1);
-
-  // Check Lora RX
-  bool isAck = false;
-  sensorTime = millis();
-
-  do {
-    lora.update();
-    isAck = lora.readAck();
-    //there might be a problem with lora.update(); causing this loop to run indefinitely
-    //this is a failsafe
-    if (millis() - sensorTime > 2000) break;
-  } while (!isAck);
-  if (isAck) blinker(3);
-
-#if SERIAL
-  Serial.println("TxDone");
-#endif
-
-#endif
-//------
-#if !LORA
-#if SERIAL
-  Serial.print("...going to sleep");
-#endif
-#if ACK_BEEP
-  ack(10);
-#endif
+#if !LORA && !LORAWAN
   sleep();
-#else
 #endif
 }
 
@@ -615,52 +710,322 @@ void gatherData() {
 #if LORA || LORAWAN
 
 String makePayload() {
-  String myStr;
-  myStr = String(NODE_NR) + ",";
+  String myStr = "";
+  checkStr = "";  //consists of counter+node number to address the node for acknowledgement
+
+#if LORA
+  if (!triedOnce) {  //if gateway was busy and a resend happend after 8 secs do not count
+    nrOfMsgs++;
+  }
+#endif
+
+  checkStr = String(nrOfMsgs) + "," + String(NODE_NR);
+  myStr = checkStr + ",";
   dtostrf(voltage, 3, 2, buffer);
   myStr += String(buffer) + ",";
+
 #if DS18B20_TEMP || DS18B20_TEMP2
   dtostrf(tempC1, 3, 1, buffer);
   myStr += String(buffer) + ",";
   dtostrf(tempC2, 3, 1, buffer);
   myStr += String(buffer) + ",";
 #endif
+
 #if SHT
   dtostrf(tempSHT, 3, 1, buffer);
   myStr += String(buffer) + ",";
   myStr += String((int)humSHT) + ",";
 #endif
+
 #if SCALE
   dtostrf(weight, 3, 1, buffer);
   myStr += String(buffer) + ",";
 #endif
-  myStr.remove(myStr.length() - 1);
+
+  myStr += String(millis() - upTime) + ",";
+
+#if LORA || LORA_GATEWAY
+  myStr += String(COMMON_PHRASE);
+#endif
+
+  Serial.println(payload);
+
   return myStr;
+}
+
+#endif
+//***********************************************************************************************
+//                                                                                  Send LoRaWAN
+//***********************************************************************************************
+
+#if LORAWAN
+
+void sendToLorawan() {
+#if SERIAL
+  Serial.print("Sending packet (LoRaWan)...");
+#endif
+  String payload = makePayload();
+  const char* payloadCStr = payload.c_str();
+  size_t payloadLength = strlen(payloadCStr);
+
+#if SERIAL
+  Serial.print("Sending: ");
+  Serial.println(payloadCStr);
+#endif
+  //sending
+  lora.sendUplink(payloadCStr, payloadLength, 0, 1);
+
+#if ACK_BEEP
+  ack(10);
+#endif
+  rxTime = millis();
+  waitForAck = true;
+}
+
+#endif
+
+//***********************************************************************************************
+//                                                                                     Send LoRa
+//***********************************************************************************************
+
+#if LORA
+
+void LoRa_rxMode() {
+
+  isReceived = false;  //starts the rx timout check
+  rxTime = millis();
+
+  LoRa.enableInvertIQ();  // active invert I and Q signals
+  LoRa.receive();         // set receive mode
+}
+
+void LoRa_txMode() {
+  LoRa.idle();             // set standby mode
+  LoRa.disableInvertIQ();  // normal mode
+}
+
+void LoRa_sendMessage(String message) {
+  LoRa_txMode();  // set tx mode
+
+#if SERIAL
+  Serial.print("Sending: ");
+  Serial.println(message);
+#endif
+
+#if ENCRYPTION
+  message = encryptData(message);
+#endif
+  LoRa.beginPacket();    // start packet
+  LoRa.print(message);   // add payload
+  LoRa.endPacket(true);  // finish packet and send it
+}
+
+void onReceive(int packetSize) {
+  isReceived = true;  //stops the rx timout check
+  String message = "";
+  sensorTime = millis();
+  while (LoRa.available()) {
+    message += (char)LoRa.read();
+    if (millis() - sensorTime > 500) break;
+  }
+#if ENCRYPTION
+  message = decryptData(message);
+#endif
+
+#if SERIAL
+  Serial.print("Received from Gateway: ");
+  Serial.print(message);
+  Serial.print(" | should be: ");
+  Serial.println(checkStr);
+  delayIfSerial();
+#endif
+
+  if (message == checkStr) {
+
+#if ACK_BEEP
+    ack(10000);
+#endif
+
+#if SERIAL
+    Serial.println("The gateway has confirmed..");
+    delayIfSerial();
+#endif
+    nrOfTries = 0;      //set back the counter for rx timeout retries
+    triedOnce = false;  //count again;
+    sleepLoraNode();
+  } else {
+#if SERIAL
+    Serial.print("Gateway busy. Trying again in 8s...  ");
+    delayIfSerial();
+#endif
+#if ACK_BEEP
+    ack(1000);
+#endif
+    triedOnce = true;                 // prevents the message counter from counting
+    counter = ceil(sleepTime * 7.5);  //sleep for 8 seconds and try again
+    sleepLoraNode();
+  }
+}
+
+
+void onTxDone() {
+#if ACK_BEEP
+  //ack(10);
+#endif
+#if SERIAL
+  Serial.println("TxDone");
+  Serial.println("wait for an answer...");
+  delayIfSerial();
+#endif
+  LoRa_rxMode();
 }
 
 #endif
 
 
 //***********************************************************************************************
-//                                                                                  Sent package
+//                                                                                  NODE sleep
 //***********************************************************************************************
 
-#if LORA
+#if LORA && !LORA_GATEWAY
 
-void onTxDone() {
-
-#if ACK_BEEP
-  ack(10);
-#endif
+void sleepLoraNode() {
+  LoRa_txMode();
+  isReceived = true;
 #if SERIAL
-  Serial.println("TxDone");
+  Serial.print("Uptime:");
+  Serial.println(millis() - upTime);
   Serial.println("...going to sleep");
+  delayIfSerial();
+#endif
+#if ACK_BEEP
+  //ack(10);
+  //ack(10);  //when an acknowledgement is received go to sleep
 #endif
   sleep();
 }
 
 #endif
 
+//***********************************************************************************************
+//                                                                                  LoRA Gateway
+//***********************************************************************************************
+
+#if LORA_GATEWAY
+
+void onReceive(int packetSize) {
+
+  String message = "";
+  for (int i = 0; i < packetSize; i++) {
+    char c = (char)LoRa.read();
+    message += c;
+  }
+
+#if ENCRYPTION
+  message = decryptData(message);
+#endif
+
+  if (message.substring(message.lastIndexOf(',') + 1).equals(COMMON_PHRASE)) {
+    // Remove the common phrase including the comma
+    message = message.substring(0, message.lastIndexOf(','));
+    message += "," + String(LoRa.packetRssi()) + "," + String(LoRa.packetSnr());
+    Serial.println(message);
+    //send the first part (before the second comma) of the message back as an acknolegement ("counter,NODE_NAME")
+    LoRa_sendMessage(message.substring(0, message.indexOf(',', message.indexOf(',') + 1)));
+  }
+}
+
+void onTxDone() {
+  LoRa_rxMode();
+}
+
+void LoRa_rxMode() {
+  LoRa.disableInvertIQ();  // normal mode
+  LoRa.receive();          // set receive mode
+}
+
+void LoRa_txMode() {
+  LoRa.idle();            // set standby mode
+  LoRa.enableInvertIQ();  // active invert I and Q signals
+}
+
+void LoRa_sendMessage(String message) {
+  LoRa_txMode();  // set tx mode
+#if ENCRYPTION
+  message = encryptData(message);
+#endif
+  LoRa.beginPacket();    // start packet
+  LoRa.print(message);   // add payload
+  LoRa.endPacket(true);  // finish packet and send it
+}
+
+#endif
+
+
+
+//***********************************************************************************************
+//                                                                                           AES
+//***********************************************************************************************
+
+#if ENCRYPTION
+
+String addPadding(const String& plaintext) {
+  String paddedText = plaintext;
+  int paddingLength = 16 - (plaintext.length() % 16);
+  for (int i = 0; i < paddingLength; ++i) {
+    paddedText += (char)paddingLength;
+  }
+  return paddedText;
+}
+
+String removePadding(const String& paddedText) {
+  int paddingLength = paddedText[paddedText.length() - 1];
+  return paddedText.substring(0, paddedText.length() - paddingLength);
+}
+
+String encryptData(const String& plaintext) {
+  // Add padding to the plaintext
+  String paddedText = addPadding(plaintext);
+
+  // Convert the plaintext string to a byte array
+  uint8_t* plaintextBytes = (uint8_t*)paddedText.c_str();
+  uint16_t plaintextLength = paddedText.length();
+
+  // Encrypt the padded plaintext using AES-128
+  aes128_enc_multiple(key, plaintextBytes, plaintextLength);
+
+  // Encode the encrypted byte array to Base64
+  int encodedLength = Base64.encodedLength(plaintextLength);
+  char encodedString[encodedLength + 1];
+  Base64.encode(encodedString, plaintextBytes, plaintextLength);
+
+  // Return the Base64 encoded string
+  return String(encodedString);
+}
+
+String decryptData(const String& encryptedData) {
+  // Decode the Base64 encoded string directly into a byte array
+  int inputStringLength = encryptedData.length();
+  int decodedLength = Base64.decodedLength(encryptedData.c_str(), inputStringLength);
+  uint8_t decodedBytes[decodedLength];
+  Base64.decode((char*)decodedBytes, encryptedData.c_str(), inputStringLength);
+
+  // Decrypt the decoded byte array using AES-128
+  aes128_dec_multiple(key, decodedBytes, decodedLength);
+
+  // Convert the decrypted byte array to a string
+  String decryptedData = "";
+  for (int i = 0; i < decodedLength; i++) {
+    decryptedData += (char)decodedBytes[i];
+  }
+
+  // Remove padding from the decrypted data
+  decryptedData = removePadding(decryptedData);
+
+  return decryptedData;
+}
+
+#endif
 
 //***********************************************************************************************
 //                                                                                         Click
@@ -671,11 +1036,18 @@ void click() {
   Serial.println("click");
 #endif
   clicked = true;
+
+#if LORA && !LORA_GATEWAY
+  triedOnce = false;
+#endif
+
 #if LORAWAN
+
 #if SERIAL
   Serial.println("resetting");
 #endif
   resetFunc();
+
 #endif
 }
 
@@ -719,6 +1091,7 @@ void ack(int t) {
 #if SERIAL
   Serial.print("beep: ");
   Serial.println(t);
+  delayIfSerial();
 #endif
 
   digitalWrite(BUZZER_PIN, LOW);
@@ -728,25 +1101,14 @@ void ack(int t) {
 
 
 //***********************************************************************************************
-//                                                                                  LoRA Gateway
+//                                                                                         Delay
 //***********************************************************************************************
 
-#if LORA_GATEWAY
-
-void onReceive(int packetSize) {
-  // read packet
-  for (int i = 0; i < packetSize; i++) {
-    Serial.print((char)LoRa.read());
-  }
-
-  // print RSSI of packet
-  Serial.print(",");
-  Serial.print(LoRa.packetRssi());
-  Serial.print(",");
-  Serial.println(LoRa.packetSnr());
+#if SERIAL
+void delayIfSerial() {
+  delay(100);
 }
 #endif
-
 
 //***********************************************************************************************
 //                                                                               Calibrate scale
@@ -825,18 +1187,19 @@ void calibrate() {
       Serial.println(")");
 #endif
 
-      //Serial.println("\n\n");
       blinker(6);
       calib = false;
     }
   } else {
+
 #if SERIAL
     Serial.println("Only set new tare");
+    delayIfSerial();
 #endif
+
     EEPROM.put(12, weight);
     ack(100);
   }
-  delay(100);
   longPressed = false;
   sleep();
 }

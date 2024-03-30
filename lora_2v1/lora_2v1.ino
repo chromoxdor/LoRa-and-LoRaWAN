@@ -8,8 +8,9 @@
 
 //LoRa-section----------------------------------------------------------------------------------
 #define LORA 1
-#define TX_RETRIES 2  //how often should the LoRa node try to send when no ack is received until \
-                      // the system goes to sleep
+#define TX_RETRIES 2  // How often should the LoRa node try to send when no ack is received until \
+                      // the system goes to sleep again (interval for retry is 8 seconds)
+                      // It will then return to it´s given "sleep-time" interval. 
 #define LORA_GATEWAY 0
 
 #define ENCRYPTION 0           //add simple AES128 encryption to LoRa
@@ -60,7 +61,7 @@
 #if LORA
 bool isReceived = true;
 bool triedOnce = false;
-int nrOfTries;
+int nrOfTries = 0;
 //#undef LORAWAN
 #endif
 
@@ -249,11 +250,11 @@ void setup() {
   Serial.println("Starting LoRa Gateway");
 #endif
 
-  // if (!LoRa.begin(LORA_FREQUENCY)) {
-  //   Serial.println("Starting LoRa failed!");
-  //   while (1)
-  //     ;
-  // }
+  if (!LoRa.begin(LORA_FREQUENCY)) {
+    Serial.println("Starting LoRa failed!");
+    while (1)
+      ;
+  }
 #if LORA || LORA_GATEWAY
   LoRa.onTxDone(onTxDone);
   LoRa.onReceive(onReceive);
@@ -501,6 +502,7 @@ void loop() {
   if (clicked && !calib) {
     ack(100);
     clicked = false;
+    woke = true;
     gatherData();
   }
 

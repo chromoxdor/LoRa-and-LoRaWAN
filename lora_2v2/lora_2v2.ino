@@ -14,7 +14,7 @@
 #define LORA_GATEWAY 0
 
 #define ENCRYPTION 1                    // add simple AES128 encryption to LoRa
-#define PASSWORD "XXXXXXXXXXXXXXXXXX"   // enter a password and make sure it matches the one of \
+#define PASSWORD "XXXXXXXXXXXXXXXXXX"  // enter a password and make sure it matches the one of \
                                         // the gateway/node
 #define COMMON_PHRASE "CXD"             // Gateway checks if received message contains this phrase \
                                         // at the end and only  reacts to that
@@ -28,7 +28,7 @@
                         // to sleep indefinitely
 
 //sensor-section--------------------------------------------------------------------------------
-#define SCALE2 1
+#define SCALE 1
 #define CALIBWEIGHT 1000  // weight used for calibrating the scale in gramm
 
 #define SHT 0  // use an SHT2X I2C device
@@ -109,18 +109,6 @@ bool waitForAck = false;
 #endif
 
 #if SCALE
-#include "HX711.h"  //https://github.com/RobTillaart/HX711
-HX711 myScale;
-uint8_t dataPin = A2;
-uint8_t clockPin = A1;
-float weight;
-float scale;
-float tare;
-uint32_t offset;
-unsigned long currentCalibTime = 0;
-#endif
-
-#if SCALE2
 #include <GyverHX711.h>  //https://github.com/GyverLibs/GyverHX711
 GyverHX711 myScale(A2, A1, HX_GAIN64_A);
 // HX_GAIN128_A - канал А усиление 128
@@ -183,14 +171,18 @@ uint8_t key[16];
 
 //change the lenght of payload to accommodate encrytion
 #define AES_BLOCK_SIZE 16  // AES block size in bytes
-#define MAXI_PAYLOAD_SIZE (((MAX_PAYLOAD_SIZE / AES_BLOCK_SIZE) + 1) * AES_BLOCK_SIZE)
-#define MAXI_PAYLOAD_SIZE (MAX_PAYLOAD_SIZE * 2)  // for base64
+#define MAX_PAYLOAD_SIZE_ENCODED (((MAX_PAYLOAD_SIZE / AES_BLOCK_SIZE) + 1) * AES_BLOCK_SIZE * 4/3)
 #endif
 
 #include <EEPROM.h>
 #include "LowPower.h"  //https://github.com/rocketscream/Low-Power
 
+#ifdef ENCRYPTION
+char payload[MAX_PAYLOAD_SIZE_ENCODED];
+#else
+#define MAX_UPLINK_PAYLOAD_SIZE MAX_PAYLOAD_SIZE
 char payload[MAX_PAYLOAD_SIZE];
+#endif
 
 int counter = 0;
 int Pcounter = 0;
@@ -240,38 +232,8 @@ void setup() {
 #endif
 
 //------------------------------------------------------------scale init
-#if SCALE && !LORA_GATEWAY
-  myScale.begin(dataPin, clockPin);
-  EEPROM.get(1, offset);
-  EEPROM.get(6, scale);
-  EEPROM.get(12, tare);
 
-  if (isnan(tare)) {
-    tare = 0;
-  }
-  if (isnan(scale)) {
-    scale = 0;
-  }
-  if (isnan(offset)) {
-    offset = 0;
-  }
-  myScale.set_offset(offset);
-  myScale.set_scale(scale);
-#if SERIAL
-  Serial.print("\noffset(");
-  Serial.print(offset);
-  Serial.print("); scale(");
-  Serial.print(scale, 6);
-  Serial.println(");\n");
-  Serial.print("); tare(");
-  Serial.print(tare);
-  Serial.println(");\n");
-  delayIfSerial();
-#endif
-#endif
-
-#if SCALE2
-  //myScale.begin(dataPin, clockPin);
+#if SCALE
   EEPROM.get(1, offset);
   EEPROM.get(15, scale);
   if (isnan(scale)) {
@@ -280,8 +242,6 @@ void setup() {
   if (isnan(offset)) {
     offset = 0;
   }
-  //myScale.setOffset(offset);
-  //myScale.set_scale(scale);
 #if SERIAL
   Serial.print("\noffset(");
   Serial.print(offset);
@@ -295,7 +255,7 @@ void setup() {
 #endif
 
 //------------------------------------------------------------buttons init
-#if SCALE || SCALE2
+#if SCALE
 
   button.attachLongPressStart(LongPressStart);
   button.setPressMs(LONGPRESS_S * 1000);
@@ -395,7 +355,7 @@ void tryJoining() {
     Serial.println(joinCount);
     delayIfSerial();
 #endif
-#if SCALE || SCALE2
+#if SCALE
     while (!digitalRead(BUTTON_PIN)) {
       if (!runOnce) {
         rxTime = millis();
@@ -449,6 +409,7 @@ void sleep()  // here we put the arduino to sleep
 #if LORAWAN
   waitForAck = false;
 #endif
+
   if (woke) {
     powerDown();
   }
@@ -492,6 +453,7 @@ void sleepCounter() {
   Serial.println(int(ceil(sleepTime * 7.5)));
   delayIfSerial();
 #endif
+
   if (counter < ceil(sleepTime * 7.5)) {  //(minutes * 60 / 8) since the mcu can only go to sleep for 8sec via watchdog timer
     woke = false;
     counter++;
@@ -515,10 +477,6 @@ void powerUp() {
 #endif
 
 #if SCALE
-  myScale.power_up();
-#endif
-
-#if SCALE2
   myScale.sleepMode(false);
 #endif
 
@@ -541,10 +499,6 @@ void powerDown() {
 #endif
 
 #if SCALE
-  myScale.power_down();
-#endif
-
-#if SCALE2
   myScale.sleepMode(true);
 #endif
 
@@ -578,18 +532,26 @@ void loop() {
     sleepCounter();
   }
   //------------------------------------------------------------go and get data
-#if LORAWAN
+
+
+#if LORAWAN  // for loranwan we need another approch for a button press \
+             // since there was an issue with using the onebutton library for that
+
   if (!digitalRead(BUTTON_PIN)) {
     if (!runOnce) {
       rxTime = millis();
       runOnce = true;
     }
-    if (millis() - rxTime > 500) {
+    if (millis() - rxTime > LONGPRESS_S) {
       ack(100);
-      delay(LONGPRESS_S * 1000);
       resetFunc();
     }
   } else {
+    if (runOnce) {
+      ack(100);
+      woke = true;
+      gatherData();
+    }
     runOnce = false;
   }
 #else
@@ -600,8 +562,9 @@ void loop() {
     gatherData();
   }
 #endif
-  //------------------------------------------------------------calibrate scale
-#if SCALE || SCALE2
+
+  //-----------------------------------------------------call calibrate scale
+#if SCALE
   if (calib && longPressed) {
     calibrate();
   }
@@ -685,7 +648,7 @@ void gatherData() {
   strcat(payload, NODE_NR);
   strcat(payload, ",");
 
-  checkStr = "";  //consists of counter+node number to address the node for acknowledgement
+  checkStr = "";  //consists of counter + node number to address the node for acknowledgement
   checkStr = String(nrOfMsgs) + "," + String(NODE_NR);
 
 #if SERIAL
@@ -791,35 +754,8 @@ void gatherData() {
 #endif  //SHT
 
   //------------------------------------------------------------scale
+
 #if SCALE
-
-  char weightBuffer[12];
-
-#if SERIAL
-  Serial.println("...waiting for scale");
-#endif
-
-  sensReady = myScale.wait_ready_timeout(500, 10);
-  if (sensReady) {
-    dtostrf(myScale.get_units(1) - tare, 3, 1, weightBuffer);
-    strcat(payload, weightBuffer);
-    strcat(payload, ",");
-
-#if SERIAL
-    Serial.println();
-    Serial.print("absWeight: ");
-    Serial.println(myScale.get_units(1));
-    Serial.print("tareWeight: ");
-    Serial.println(myScale.get_units(1) - tare);
-#endif
-  } else {
-#if SERIAL
-    Serial.println("Scale was not ready!");
-#endif
-  }
-#endif  //SCALE
-
-#if SCALE2
   char weightBuffer[12];
   bool sensReady = false;
   sensorTime = millis();
@@ -828,11 +764,12 @@ void gatherData() {
     if (millis() - sensorTime > 800) break;
   } while (!sensReady);
 
-  dtostrf((static_cast<float>(myScale.read()) - offset) * scale/1000, 4, 2, weightBuffer);
+  dtostrf((static_cast<float>(myScale.read()) - offset) * scale / 1000, 4, 2, weightBuffer);
   strcat(payload, weightBuffer);
   strcat(payload, ",");
   weightBuffer[0] = '\0';  // Clears the contents of weightBuffer
-#endif                     //SCALE2
+
+#endif  //SCALE
 
 //-----------------------------------------------------add or remove stuff
 #if LORA || LORA_GATEWAY
@@ -861,10 +798,10 @@ void gatherData() {
 #endif
 
   LoRa_sendMessage(String(payload));  // send a message
-#endif  //LORA
+#endif                                //LORA
 
 
-  //                                                      LoRaWAN
+  //                                                   LoRaWAN
 
 #if LORAWAN
   lora.sendUplink(payload, strlen(payload), 0, 1);
@@ -879,7 +816,6 @@ void gatherData() {
   delay(100);
   sleep();
 #endif
-
 }
 #endif  //#if !LORA_GATEWAY
 
@@ -1142,7 +1078,7 @@ void click() {
 //                                                                                    Long Click
 //***********************************************************************************************
 
-#if SCALE || SCALE2
+#if SCALE
 
 void LongPressStart() {
 #if SERIAL
@@ -1201,106 +1137,6 @@ void delayIfSerial() {
 //***********************************************************************************************
 
 #if SCALE
-void calibrate() {
-  myScale.power_up();
-  longPressed = false;
-  calib = true;
-  blinker(2);
-  sensReady = myScale.wait_ready_timeout(500, 10);
-  if (sensReady) {
-    weight = myScale.get_units(1);
-  }
-#if SERIAL
-  Serial.println("Tare scale...");
-#endif
-  myScale.tare(20);  // average 20 measurements.
-
-  offset = myScale.get_offset();
-  ack(100);
-
-#if SERIAL
-  Serial.print("Press the button for ");
-  Serial.print(LONGPRESS_S);
-  Serial.println(" seconds to start the calibration");
-#endif
-  currentCalibTime = millis();
-  while (!longPressed) {
-    button.tick();
-    if (millis() - currentCalibTime > 15000) {
-      calib = false;
-      break;
-    }
-  }
-  longPressed = false;
-
-  if (calib) {
-    blinker(4);
-#if SERIAL
-    Serial.print("Place exactly ");
-    Serial.print(CALIBWEIGHT);
-    Serial.print(" on the scale and press the button for ");
-    Serial.print(LONGPRESS_S);
-    Serial.println(" seconds");
-#endif
-    currentCalibTime = millis();
-    while (!longPressed) {
-      button.tick();
-      if (millis() - currentCalibTime > 300000) {
-        calib = false;
-        break;
-      }
-    }
-    if (calib) {
-      blinker(1);
-      //uint32_t weightCalib = 5000;
-      int weightCalib = CALIBWEIGHT;
-
-      //Serial.print("WEIGHT: ");
-      //Serial.println(weightCalib);
-      myScale.calibrate_scale(weightCalib, 20);
-      scale = myScale.get_scale();
-#if SERIAL
-      Serial.print("SCALE:  ");
-      Serial.println(scale, 6);
-#endif
-      EEPROM.put(1, offset);
-      EEPROM.put(6, scale);
-      EEPROM.put(12, 0);  //set tare to 0
-      myScale.set_offset(offset);
-      myScale.set_scale(scale);
-
-#if SERIAL
-      Serial.print("offset(");
-      Serial.print(offset);
-      Serial.print("); and scale(");
-      Serial.print(scale, 6);
-      Serial.println(")");
-#endif
-
-      blinker(6);
-      calib = false;
-    }
-  } else {
-
-#if SERIAL
-    Serial.println("Only set new tare");
-    delayIfSerial();
-#endif
-
-    EEPROM.put(12, weight);
-    ack(100);
-  }
-  longPressed = false;
-#if LORAWAN
-  if (!isJoined) resetFunc();
-#endif
-  sleep();
-}
-
-#endif
-
-
-#if SCALE2
 void calibrate() {
   myScale.sleepMode(false);
   longPressed = false;

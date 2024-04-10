@@ -1,50 +1,50 @@
 //**********************************************************************************************
 //************* OPTIONS ************************************************************************
 
-//common-setting-section------------------------------------------------------------------------
-#define LORA_FREQUENCY 868E6  // frequency in Hz (433E6, 868E6, 915E6)
-#define NODE_NR "2"           // give your node a number or a name
+// Common Setting Section ---------------------------------------------------------------
+#define LORA_FREQUENCY 868E6   // Frequency in Hz (433E6, 868E6, 915E6)
+#define NODE_NR "2"            // Give your node a number or a name
 
+// LoRa Section ------------------------------------------------------------------------
+#define LORA 0                  // Is LoRa enabled? (0 or 1)
+#define TX_RETRIES 2            // How often should the LoRa node try to send when no ACK is received until
+                                // the system goes to sleep again (interval for retry is 8 seconds).
+                                // It will then return to its given "sleep-time" interval.
+#define LORA_GATEWAY 0          // Is LoRa Gateway enabled? (0 or 1)
 
-//LoRa-section----------------------------------------------------------------------------------
-#define LORA 0
-#define TX_RETRIES 2  // How often should the LoRa node try to send when no ack is received until \
-                      // the system goes to sleep again (interval for retry is 8 seconds) \
-                      // It will then return to it´s given "sleep-time" interval.
-#define LORA_GATEWAY 0
+#define ENCRYPTION 1            // Add simple AES128 encryption to LoRa
+#define PASSWORD "XXXXXXXXXXXXXXXXXX" // Enter a password and make sure it matches the one of
+                                       // the gateway/node
+#define COMMON_PHRASE "CXD"     // Gateway checks if received message contains this phrase
+                                // at the end and only reacts to that
+#define MAX_PAYLOAD_SIZE 50     // Define maximum payload size
 
-#define ENCRYPTION 1                    // add simple AES128 encryption to LoRa
-#define PASSWORD "XXXXXXXXXXXXXXXXXX"  // enter a password and make sure it matches the one of \
-                                        // the gateway/node
-#define COMMON_PHRASE "CXD"             // Gateway checks if received message contains this phrase \
-                                        // at the end and only  reacts to that
-
-//LoRaWAN-section-------------------------------------------------------------------------------
+// LoRaWAN Section ----------------------------------------------------------------------
+// NOTE: Define your maximum payload size for LoRaWAN (MAX_UPLINK_PAYLOAD_SIZE)
+// in the config.h of the LoRaWAN library
 #define LORAWAN 1
-#define DEVEUI   "0000000000000000"
-#define APPEUI   "0000000000000000"
-#define APPKEY   "00000000000000000000000000000000"
-#define JOIN_RETRY 100  //how often should the node try to join a gateway until it will go \
-                        // to sleep indefinitely
+#define DEVEUI "0000000000000000"
+#define APPEUI "0000000000000000"
+#define APPKEY "00000000000000000000000000000000"
+#define JOIN_RETRY 100          // How often should the node try to join a gateway until it will go
+                                // to sleep indefinitely
 
-//sensor-section--------------------------------------------------------------------------------
-#define SCALE 1
-#define CALIBWEIGHT 1000  // weight used for calibrating the scale in gramm
+// Sensor Section ------------------------------------------------------------------------
+#define SCALE 0
+#define CALIBWEIGHT 1000        // Weight used for calibrating the scale in grams
 
-#define SHT 0  // use an SHT2X I2C device
+#define SHT 1                    // Use an SHT2X I2C device
 
-#define DS18B20_TEMP 0   // set to 1 if one or multiple sensors are connected to one pin
-#define DS18B20_TEMP2 1  // set to 1 if one or two sensors (on different pins) are connected
+#define DS18B20_TEMP 1          // Set to 1 if one or multiple sensors are connected to one pin
+#define DS18B20_TEMP2 0         // Set to 1 if one or two sensors (on different pins) are connected
 
-
-//extras-section--------------------------------------------------------------------------------
-#define MAX_PAYLOAD_SIZE 50  // Define maximum payload size
-#define SLEEP_TIME 1         // sleep time in minutes (setting the sleep time to 0 will cause a 8 sec intervall)
-#define ACK_BEEP 1           // if an acknowledge beep is needed when data was sent
-#define SERIAL 1             // saves some memory if not needed since it is only for debugging
-#define LONGPRESS_S 5        // seconds to longpressevent
-#define SERIAL_SPEED 115200  // baud rate (e.g. 9600, 19200, 38400, 57600, 115200)
-#define PARITY SERIAL_8N1    // set serial mode (e.g. SERIAL_8N1, SERIAL_8E1 ,SERIAL_8O1)
+// Extras Section ------------------------------------------------------------------------
+#define SLEEP_TIME 0            // Sleep time in minutes (setting the sleep time to 0 will cause an 8-second interval)
+#define ACK_BEEP 0              // If an acknowledge beep is needed when data was sent
+#define SERIAL 1                // Save some memory if not needed since it is only for debugging
+#define LONGPRESS_S 5           // Seconds to long press event
+#define SERIAL_SPEED 115200     // Baud rate (e.g., 9600, 19200, 38400, 57600, 115200)
+#define PARITY SERIAL_8N1       // Set serial mode (e.g., SERIAL_8N1, SERIAL_8E1, SERIAL_8O1)
 //**********************************************************************************************
 //**********************************************************************************************
 
@@ -53,7 +53,6 @@
 #undef LORAWAN
 #undef LORA
 #undef SCALE
-#undef SCALE2
 #undef SHT
 #undef DS18B20_TEMP
 #undef DS18B20_TEMP2
@@ -63,14 +62,13 @@
 bool isReceived = true;
 bool triedOnce = false;
 int nrOfTries = 0;
+unsigned long nrOfMsgs;
+String checkStr;
 #undef LORAWAN
 #endif
 
 #if LORA || LORAWAN
-char buffer[10];
 unsigned long rxTime;
-unsigned long nrOfMsgs;
-String checkStr;
 #endif
 
 #if LORA || LORA_GATEWAY
@@ -177,12 +175,17 @@ uint8_t key[16];
 #include <EEPROM.h>
 #include "LowPower.h"  //https://github.com/rocketscream/Low-Power
 
-#ifdef ENCRYPTION
+#if !LORAWAN
+
+#if ENCRYPTION
 char payload[MAX_PAYLOAD_SIZE_ENCODED];
 #else
-#define MAX_UPLINK_PAYLOAD_SIZE MAX_PAYLOAD_SIZE
 char payload[MAX_PAYLOAD_SIZE];
 #endif
+
+#else 
+char payload[MAX_UPLINK_PAYLOAD_SIZE]; //
+#endif 
 
 int counter = 0;
 int Pcounter = 0;
@@ -369,22 +372,18 @@ void tryJoining() {
     runOnce = false;
 #endif
     joinCount++;
-#if ACK_BEEP
     ack(10);
     delay(100);
     ack(10);
-#endif
     isJoined = lora.join();
     if (isJoined) break;
     delay(8000);
   } while (joinCount < JOIN_RETRY);
 
   if (isJoined) {
+    ack(500);
 #if SERIAL
     Serial.println("Joined to network");
-#endif
-#if ACK_BEEP
-    ack(500);
 #endif
   } else {
 #if SERIAL
@@ -408,6 +407,7 @@ void sleep()  // here we put the arduino to sleep
 
 #if LORAWAN
   waitForAck = false;
+  runOnce = false;
 #endif
 
   if (woke) {
@@ -542,7 +542,7 @@ void loop() {
       rxTime = millis();
       runOnce = true;
     }
-    if (millis() - rxTime > LONGPRESS_S) {
+    if (millis() - rxTime > LONGPRESS_S*1000) {
       ack(100);
       resetFunc();
     }
@@ -552,7 +552,6 @@ void loop() {
       woke = true;
       gatherData();
     }
-    runOnce = false;
   }
 #else
   if (clicked && !calib) {
@@ -740,7 +739,7 @@ void gatherData() {
   dtostrf(sht.getTemperature(65), 3, 1, tempBuffer);
   strcat(payload, tempBuffer);
   strcat(payload, ",");
-  dtostrf(ht.getHumidity(28);, 2, 0, tempBuffer);
+  dtostrf(sht.getHumidity(28), 2, 0, tempBuffer);
   strcat(payload, tempBuffer);
   strcat(payload, ",");
 
@@ -805,8 +804,12 @@ void gatherData() {
 
 #if LORAWAN
   lora.sendUplink(payload, strlen(payload), 0, 1);
-  once = true;
-  waitForAck = true;
+  // once = true;
+  // waitForAck = true;
+  #if ACK_BEEP
+      ack(10);
+#endif
+      sleep();
 #endif  //LORAWAN
 
 
